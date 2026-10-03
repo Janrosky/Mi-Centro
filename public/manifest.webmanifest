@@ -1,0 +1,10 @@
+{
+  "name": "Mi Centro",
+  "short_name": "Mi Centro",
+  "description": "Tareas, proyectos, presupuesto y gastos.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f7fb",
+  "theme_color": "#172554",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
