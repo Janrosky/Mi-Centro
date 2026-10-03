@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Archive, ArrowDownToLine, BriefcaseBusiness, CalendarDays, Check, CircleDollarSign, FolderKanban, HardDrive, Plus, ReceiptText, RotateCcw, Target, Trash2, Upload } from "lucide-react";
+import { Archive, ArrowDownToLine, BriefcaseBusiness, CalendarDays, Check, CircleDollarSign, FolderKanban, HardDrive, Plus, ReceiptText, RotateCcw, Target, Trash2, Upload } from "lucide-react";
+import * as XLSX from "xlsx";
 import { toast, Toaster } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -71,6 +72,24 @@ function projectProgress(projectId: string, tasks: Task[]) {
   return projectTasks.length ? Math.round(projectTasks.filter((task) => task.done).length / projectTasks.length * 100) : 0;
 }
 
+function makeSheet(rows: Record<string, string | number>[]) {
+  const sheet = XLSX.utils.json_to_sheet(rows);
+  if (rows.length) {
+    const headers = Object.keys(rows[0]);
+    sheet["!cols"] = headers.map((header) => ({
+      wch: Math.min(48, Math.max(header.length + 2, ...rows.map((row) => String(row[header] ?? "").length + 2))),
+    }));
+    sheet["!autofilter"] = { ref: sheet["!ref"] || `A1:${XLSX.utils.encode_col(headers.length - 1)}1` };
+  }
+  return sheet;
+}
+
+function saveWorkbook(fileName: string, sheets: { name: string; rows: Record<string, string | number>[] }[]) {
+  const workbook = XLSX.utils.book_new();
+  sheets.forEach(({ name, rows }) => XLSX.utils.book_append_sheet(workbook, makeSheet(rows), name));
+  XLSX.writeFile(workbook, fileName, { compression: true });
+}
+
 function SelectField({ value, onChange, options, placeholder }: { value: string; onChange: (v: string) => void; options: { value: string; label: string }[]; placeholder: string }) {
   return <Select value={value} onValueChange={(v) => onChange(v || "")}><SelectTrigger className="w-full"><SelectValue placeholder={placeholder} /></SelectTrigger><SelectContent>{options.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent></Select>;
 }
@@ -138,6 +157,84 @@ export default function Home() {
     toast.success("Respaldo descargado");
   }
 
+  function exportMatrix() {
+    const rows = data.tasks.map((task) => ({
+      Tarea: task.title,
+      Prioridad: quadrantInfo[task.quadrant].title,
+      Clasificación: quadrantInfo[task.quadrant].hint,
+      Proyecto: data.projects.find((project) => project.id === task.projectId)?.name || "Sin proyecto",
+      Inicio: task.start,
+      Fin: task.due,
+      Estado: task.done ? "Completada" : "Pendiente",
+    }));
+    saveWorkbook(`mi-centro-matriz-${today}.xlsx`, [{ name: "Matriz", rows }]);
+    toast.success("Matriz descargada en Excel");
+  }
+
+  function exportTimeline() {
+    const projectRows = data.projects.map((project) => {
+      const projectTasks = data.tasks.filter((task) => task.projectId === project.id);
+      const done = projectTasks.filter((task) => task.done).length;
+      return {
+        Proyecto: project.name,
+        "Total de tareas": projectTasks.length,
+        Completadas: done,
+        Pendientes: projectTasks.length - done,
+        "Avance (%)": projectProgress(project.id, data.tasks),
+      };
+    });
+    const taskRows = data.tasks.filter((task) => task.projectId).map((task) => {
+      const start = new Date(`${task.start}T12:00:00`);
+      const due = new Date(`${task.due}T12:00:00`);
+      return {
+        Proyecto: data.projects.find((project) => project.id === task.projectId)?.name || "Proyecto eliminado",
+        Tarea: task.title,
+        Inicio: task.start,
+        Fin: task.due,
+        "Duración (días)": Math.max(1, Math.round((due.getTime() - start.getTime()) / 86400000) + 1),
+        Estado: task.done ? "Completada" : "Pendiente",
+      };
+    });
+    saveWorkbook(`mi-centro-cronograma-${today}.xlsx`, [
+      { name: "Proyectos", rows: projectRows },
+      { name: "Cronograma", rows: taskRows },
+    ]);
+    toast.success("Cronograma descargado en Excel");
+  }
+
+  function exportFinances() {
+    const monthExpenses = data.expenses.filter((expense) => expense.date.startsWith(data.month));
+    const summaryRows = [
+      { Concepto: "Mes", Valor: monthLabel },
+      { Concepto: "Presupuesto total", Valor: budgetTotal },
+      { Concepto: "Total gastado", Valor: spent },
+      { Concepto: "Disponible", Valor: budgetTotal - spent },
+      { Concepto: "Uso del presupuesto (%)", Valor: budgetTotal ? Math.round(spent / budgetTotal * 100) : 0 },
+    ];
+    const budgetRows = data.budgets.map((budget) => {
+      const used = monthExpenses.filter((expense) => expense.categoryId === budget.id).reduce((sum, expense) => sum + expense.amount, 0);
+      return {
+        Categoría: budget.category,
+        Presupuesto: budget.amount,
+        Gastado: used,
+        Disponible: budget.amount - used,
+        "Uso (%)": budget.amount ? Math.round(used / budget.amount * 100) : 0,
+      };
+    });
+    const expenseRows = monthExpenses.map((expense) => ({
+      Fecha: expense.date,
+      Descripción: expense.description,
+      Categoría: data.budgets.find((budget) => budget.id === expense.categoryId)?.category || "Sin categoría",
+      Monto: expense.amount,
+    }));
+    saveWorkbook(`mi-centro-finanzas-${data.month}.xlsx`, [
+      { name: "Resumen", rows: summaryRows },
+      { name: "Presupuesto", rows: budgetRows },
+      { name: "Gastos", rows: expenseRows },
+    ]);
+    toast.success("Finanzas descargadas en Excel");
+  }
+
   async function readBackup(file?: File) {
     if (!file) return;
     try {
@@ -157,7 +254,7 @@ export default function Home() {
       </header>
 
       <section className="workspace">
-        <div className="welcome-row"><div><p className="eyebrow">{new Date().toLocaleDateString("es-CR", { weekday: "long", day: "numeric", month: "long" })}</p><h1>Buenos días, Ale</h1></div><div className="mini-stats"><span><b>{data.tasks.filter(t => !t.done).length}</b> pendientes</span><span><b>{data.projects.length}</b> proyectos</span></div></div>
+        <div className="welcome-row"><div><p className="eyebrow">{new Date().toLocaleDateString("es-CR", { weekday: "long", day: "numeric", month: "long" })}</p><h1>Buenos días</h1></div><div className="mini-stats"><span><b>{data.tasks.filter(t => !t.done).length}</b> pendientes</span><span><b>{data.projects.length}</b> proyectos</span></div></div>
 
         <Tabs defaultValue="productividad" className="main-tabs">
           <TabsList className="nav-tabs">
@@ -171,18 +268,18 @@ export default function Home() {
               <article className="summary-card violet"><div><span>Proyectos activos</span><strong>{data.projects.length}</strong></div><p>Conecta cada tarea con su resultado</p></article>
               <article className="summary-card coral"><div><span>Para hacer ahora</span><strong>{data.tasks.filter(t => t.quadrant === "do" && !t.done).length}</strong></div><p>Tu foco inmediato</p></article>
             </div>
-            <div className="section-heading"><div><p className="eyebrow">Matriz Eisenhower</p><h2>Tareas y prioridades</h2></div><Dialog open={taskOpen} onOpenChange={setTaskOpen}><DialogTrigger asChild><Button><Plus /> Nueva tarea</Button></DialogTrigger><TaskDialog projects={data.projects} onSave={(task) => { update((s) => ({ ...s, tasks: [...s.tasks, task] })); setTaskOpen(false); }} /></Dialog></div>
+            <div className="section-heading"><div><p className="eyebrow">Matriz Eisenhower</p><h2>Tareas y prioridades</h2></div><div className="section-actions"><Button variant="outline" onClick={exportMatrix}><ArrowDownToLine /> Descargar Excel</Button><Dialog open={taskOpen} onOpenChange={setTaskOpen}><DialogTrigger asChild><Button><Plus /> Nueva tarea</Button></DialogTrigger><TaskDialog projects={data.projects} onSave={(task) => { update((s) => ({ ...s, tasks: [...s.tasks, task] })); setTaskOpen(false); }} /></Dialog></div></div>
             <div className="eisenhower-grid">{(Object.keys(quadrantInfo) as Quadrant[]).map((quadrant) => <QuadrantCard key={quadrant} quadrant={quadrant} tasks={data.tasks.filter(t => t.quadrant === quadrant)} projects={data.projects} onToggle={toggleTask} onDelete={deleteTask} />)}</div>
             <div className="section-heading project-heading"><div><p className="eyebrow">Resultados</p><h2>Proyectos</h2></div><Dialog open={projectOpen} onOpenChange={setProjectOpen}><DialogTrigger asChild><Button variant="outline"><Plus /> Nuevo proyecto</Button></DialogTrigger><ProjectDialog onSave={(project) => { update((s) => ({ ...s, projects: [...s.projects, project] })); setProjectOpen(false); }} /></Dialog></div>
             <Tabs defaultValue="tarjetas" className="project-views">
               <TabsList className="project-view-tabs"><TabsTrigger value="tarjetas">Tarjetas</TabsTrigger><TabsTrigger value="cronograma">Cronograma</TabsTrigger></TabsList>
               <TabsContent value="tarjetas"><div className="project-grid">{data.projects.map((p) => { const total = data.tasks.filter(t => t.projectId === p.id).length; const done = data.tasks.filter(t => t.projectId === p.id && t.done).length; const progress = projectProgress(p.id, data.tasks); return <article className="project-card" key={p.id}><div className="project-top"><span className="project-dot" style={{ background: p.color }} /><BriefcaseBusiness /><Button variant="ghost" size="icon-sm" aria-label={`Eliminar ${p.name}`} onClick={() => update((s) => ({ ...s, projects: s.projects.filter(x => x.id !== p.id), tasks: s.tasks.map(t => t.projectId === p.id ? { ...t, projectId: "" } : t) }))}><Trash2 /></Button></div><h3>{p.name}</h3><div className="progress-label"><span>{done} de {total} tareas listas</span><b>{progress}%</b></div><Progress value={progress} /></article>; })}</div></TabsContent>
-              <TabsContent value="cronograma"><ProjectTimeline projects={data.projects} tasks={data.tasks} /></TabsContent>
+              <TabsContent value="cronograma"><ProjectTimeline projects={data.projects} tasks={data.tasks} onExport={exportTimeline} /></TabsContent>
             </Tabs>
           </TabsContent>
 
           <TabsContent value="finanzas" className="space-y-5">
-            <div className="finance-hero"><div><p className="eyebrow">Presupuesto de {monthLabel}</p><h2>{money.format(Math.max(budgetTotal - spent, 0))}</h2><span>disponibles de {money.format(budgetTotal)}</span></div><div className="finance-actions"><Input aria-label="Mes del presupuesto" type="month" value={data.month} onChange={(e) => update((s) => ({ ...s, month: e.target.value }))} /><Button variant="outline" onClick={() => setBudgetOpen(true)}>Editar presupuesto</Button><Dialog open={expenseOpen} onOpenChange={setExpenseOpen}><DialogTrigger asChild><Button><Plus /> Registrar gasto</Button></DialogTrigger><ExpenseDialog budgets={data.budgets} onSave={(expense) => { update((s) => ({ ...s, expenses: [expense, ...s.expenses] })); setExpenseOpen(false); }} /></Dialog></div></div>
+            <div className="finance-hero"><div><p className="eyebrow">Presupuesto de {monthLabel}</p><h2>{money.format(Math.max(budgetTotal - spent, 0))}</h2><span>disponibles de {money.format(budgetTotal)}</span></div><div className="finance-actions"><Input aria-label="Mes del presupuesto" type="month" value={data.month} onChange={(e) => update((s) => ({ ...s, month: e.target.value }))} /><Button variant="outline" onClick={exportFinances}><ArrowDownToLine /> Descargar Excel</Button><Button variant="outline" onClick={() => setBudgetOpen(true)}>Editar presupuesto</Button><Dialog open={expenseOpen} onOpenChange={setExpenseOpen}><DialogTrigger asChild><Button><Plus /> Registrar gasto</Button></DialogTrigger><ExpenseDialog budgets={data.budgets} onSave={(expense) => { update((s) => ({ ...s, expenses: [expense, ...s.expenses] })); setExpenseOpen(false); }} /></Dialog></div></div>
             <div className="summary-grid finance-summary"><article className="summary-card green"><div><span>Presupuesto</span><strong>{money.format(budgetTotal)}</strong></div></article><article className="summary-card coral"><div><span>Gastado</span><strong>{money.format(spent)}</strong></div></article><article className="summary-card blue"><div><span>Uso</span><strong>{budgetTotal ? Math.round(spent / budgetTotal * 100) : 0}%</strong></div><Progress value={budgetTotal ? spent / budgetTotal * 100 : 0} /></article></div>
             <div className="finance-layout"><section className="panel"><div className="panel-title"><div><p className="eyebrow">Por categoría</p><h2>Presupuesto mensual</h2></div><ReceiptText /></div><div className="budget-list">{data.budgets.map((b) => { const used = data.expenses.filter(e => e.categoryId === b.id && e.date.startsWith(data.month)).reduce((s,e) => s + e.amount, 0); const pct = b.amount ? Math.min(used / b.amount * 100, 100) : 0; return <div className="budget-row" key={b.id}><div className="budget-name"><span style={{ background: b.color }} /> <strong>{b.category}</strong><small>{money.format(used)} / {money.format(b.amount)}</small></div><Progress value={pct} /><b className={pct > 90 ? "danger" : ""}>{Math.round(pct)}%</b></div>; })}</div></section><section className="panel"><div className="panel-title"><div><p className="eyebrow">Movimientos</p><h2>Gastos recientes</h2></div><CalendarDays /></div>{data.expenses.length === 0 ? <div className="empty-state"><ReceiptText /><strong>Aún no hay gastos</strong><span>Registra el primero para ver el avance real.</span></div> : <div className="expense-list">{data.expenses.filter(e => e.date.startsWith(data.month)).slice(0,8).map((e) => { const category = data.budgets.find(b => b.id === e.categoryId); return <div className="expense-row" key={e.id}><span className="expense-icon" style={{ background: `${category?.color || "#64748b"}18`, color: category?.color }}><ReceiptText /></span><div><strong>{e.description}</strong><small>{category?.category} · {new Date(`${e.date}T12:00:00`).toLocaleDateString("es-CR")}</small></div><b>-{money.format(e.amount)}</b><Button variant="ghost" size="icon-sm" aria-label={`Eliminar ${e.description}`} onClick={() => deleteExpense(e.id)}><Trash2 /></Button></div>; })}</div>}</section></div>
           </TabsContent>
@@ -211,16 +308,16 @@ function ProjectDialog({ onSave }: { onSave: (project: Project) => void }) {
   return <DialogContent><DialogHeader><DialogTitle>Nuevo proyecto</DialogTitle><DialogDescription>Agrupa tareas bajo un resultado concreto. El avance se calcula automáticamente.</DialogDescription></DialogHeader><div className="form-grid"><div><Label htmlFor="project-name">Nombre</Label><Input id="project-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej. nueva web Nextek" /></div></div><DialogFooter><Button disabled={!name.trim()} onClick={() => { onSave({ id: uid(), name: name.trim(), color: ["#2563eb", "#7c3aed", "#16a34a", "#ea580c"][Math.floor(Math.random()*4)] }); setName(""); }}>Crear proyecto</Button></DialogFooter></DialogContent>;
 }
 
-function ProjectTimeline({ projects, tasks }: { projects: Project[]; tasks: Task[] }) {
+function ProjectTimeline({ projects, tasks, onExport }: { projects: Project[]; tasks: Task[]; onExport: () => void }) {
   const projectTasks = tasks.filter((task) => task.projectId && projects.some((project) => project.id === task.projectId));
   const dateValues = projectTasks.flatMap((task) => [task.start || task.due, task.due || task.start]).filter(Boolean).map((date) => new Date(`${date}T12:00:00`).getTime());
-  const firstDate = new Date(Math.min(new Date(`${today}T12:00:00`).getTime(), ...(dateValues.length ? dateValues : [Date.now()])));
+  const firstDate = new Date(Math.min(new Date(`${today}T12:00:00`).getTime(), ...dateValues));
   firstDate.setDate(firstDate.getDate() - 2);
   const days = Array.from({ length: 28 }, (_, index) => { const date = new Date(firstDate); date.setDate(firstDate.getDate() + index); return date; });
   const dayMs = 86400000;
   const position = (date: string) => Math.max(0, Math.min(days.length - 1, Math.round((new Date(`${date}T12:00:00`).getTime() - days[0].getTime()) / dayMs)));
 
-  return <section className="gantt-shell"><div className="gantt-intro"><div><strong>Cronograma de proyectos</strong><span>Desliza horizontalmente para recorrer 28 días.</span></div><span className="gantt-legend"><i /> Pendiente <i className="done" /> Lista</span></div><div className="gantt-scroll"><div className="gantt-board"><div className="gantt-header"><div className="gantt-label header">Proyecto / tarea</div><div className="gantt-days">{days.map((day) => <div key={day.toISOString()} className={day.getDay() === 0 || day.getDay() === 6 ? "weekend" : ""}><small>{day.toLocaleDateString("es-CR", { weekday: "short" }).slice(0, 2)}</small><b>{day.getDate()}</b></div>)}</div></div>{projects.map((project) => { const rows = tasks.filter((task) => task.projectId === project.id); const progress = projectProgress(project.id, tasks); return <div className="gantt-project" key={project.id}><div className="gantt-project-row"><div className="gantt-label"><span className="project-dot" style={{ background: project.color }} /><strong>{project.name}</strong><b>{progress}%</b></div><div className="gantt-track"><span className="gantt-summary" style={{ background: project.color, width: `${Math.max(progress, 3)}%` }} /></div></div>{rows.length === 0 ? <div className="gantt-task-row"><div className="gantt-label muted">Sin tareas asociadas</div><div className="gantt-track" /></div> : rows.map((task) => { const startIndex = position(task.start || task.due); const endIndex = Math.max(startIndex, position(task.due || task.start)); return <div className="gantt-task-row" key={task.id}><div className="gantt-label"><span className={`timeline-check ${task.done ? "done" : ""}`}>{task.done && <Check />}</span><span>{task.title}</span></div><div className="gantt-track"><span className={`gantt-bar ${task.done ? "done" : ""}`} style={{ background: task.done ? undefined : project.color, left: `${startIndex / days.length * 100}%`, width: `${(endIndex - startIndex + 1) / days.length * 100}%` }} title={`${task.start} – ${task.due}`}>{task.done ? "Lista" : ""}</span></div></div>; })}</div>; })}</div></div></section>;
+  return <section className="gantt-shell"><div className="gantt-intro"><div><strong>Cronograma de proyectos</strong><span>Desliza horizontalmente para recorrer 28 días.</span></div><div className="gantt-tools"><span className="gantt-legend"><i /> Pendiente <i className="done" /> Lista</span><Button variant="outline" size="sm" onClick={onExport}><ArrowDownToLine /> Descargar Excel</Button></div></div><div className="gantt-scroll"><div className="gantt-board"><div className="gantt-header"><div className="gantt-label header">Proyecto / tarea</div><div className="gantt-days">{days.map((day) => <div key={day.toISOString()} className={day.getDay() === 0 || day.getDay() === 6 ? "weekend" : ""}><small>{day.toLocaleDateString("es-CR", { weekday: "short" }).slice(0, 2)}</small><b>{day.getDate()}</b></div>)}</div></div>{projects.map((project) => { const rows = tasks.filter((task) => task.projectId === project.id); const progress = projectProgress(project.id, tasks); return <div className="gantt-project" key={project.id}><div className="gantt-project-row"><div className="gantt-label"><span className="project-dot" style={{ background: project.color }} /><strong>{project.name}</strong><b>{progress}%</b></div><div className="gantt-track"><span className="gantt-summary" style={{ background: project.color, width: `${Math.max(progress, 3)}%` }} /></div></div>{rows.length === 0 ? <div className="gantt-task-row"><div className="gantt-label muted">Sin tareas asociadas</div><div className="gantt-track" /></div> : rows.map((task) => { const startIndex = position(task.start || task.due); const endIndex = Math.max(startIndex, position(task.due || task.start)); return <div className="gantt-task-row" key={task.id}><div className="gantt-label"><span className={`timeline-check ${task.done ? "done" : ""}`}>{task.done && <Check />}</span><span>{task.title}</span></div><div className="gantt-track"><span className={`gantt-bar ${task.done ? "done" : ""}`} style={{ background: task.done ? undefined : project.color, left: `${startIndex / days.length * 100}%`, width: `${(endIndex - startIndex + 1) / days.length * 100}%` }} title={`${task.start} – ${task.due}`}>{task.done ? "Lista" : ""}</span></div></div>; })}</div>; })}</div></div></section>;
 }
 
 function ExpenseDialog({ budgets, onSave }: { budgets: Budget[]; onSave: (expense: Expense) => void }) {
@@ -230,6 +327,5 @@ function ExpenseDialog({ budgets, onSave }: { budgets: Budget[]; onSave: (expens
 
 function BudgetDialog({ open, onOpenChange, budgets, onSave }: { open: boolean; onOpenChange: (v: boolean) => void; budgets: Budget[]; onSave: (b: Budget[]) => void }) {
   const [draft, setDraft] = useState(budgets);
-  useEffect(() => { if (open) setDraft(budgets); }, [open, budgets]);
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent><DialogHeader><DialogTitle>Editar presupuesto mensual</DialogTitle><DialogDescription>Ajusta cuánto quieres destinar a cada categoría.</DialogDescription></DialogHeader><div className="budget-editor">{draft.map((b, i) => <div key={b.id}><span style={{ background: b.color }} /><Input aria-label={`Categoría ${i+1}`} value={b.category} onChange={(e) => setDraft(draft.map(x => x.id === b.id ? { ...x, category: e.target.value } : x))} /><Input aria-label={`Presupuesto de ${b.category}`} type="number" min="0" value={b.amount} onChange={(e) => setDraft(draft.map(x => x.id === b.id ? { ...x, amount: Number(e.target.value) || 0 } : x))} /><Button variant="ghost" size="icon-sm" aria-label={`Eliminar ${b.category}`} onClick={() => setDraft(draft.filter(x => x.id !== b.id))}><Trash2 /></Button></div>)}</div><Button variant="outline" onClick={() => setDraft([...draft, { id: uid(), category: "Nueva categoría", amount: 0, color: "#0ea5e9" }])}><Plus /> Añadir categoría</Button><DialogFooter><Button onClick={() => onSave(draft)}>Guardar presupuesto</Button></DialogFooter></DialogContent></Dialog>;
+  return <Dialog open={open} onOpenChange={(nextOpen) => { if (nextOpen) setDraft(budgets); onOpenChange(nextOpen); }}><DialogContent><DialogHeader><DialogTitle>Editar presupuesto mensual</DialogTitle><DialogDescription>Ajusta cuánto quieres destinar a cada categoría.</DialogDescription></DialogHeader><div className="budget-editor">{draft.map((b, i) => <div key={b.id}><span style={{ background: b.color }} /><Input aria-label={`Categoría ${i+1}`} value={b.category} onChange={(e) => setDraft(draft.map(x => x.id === b.id ? { ...x, category: e.target.value } : x))} /><Input aria-label={`Presupuesto de ${b.category}`} type="number" min="0" value={b.amount} onChange={(e) => setDraft(draft.map(x => x.id === b.id ? { ...x, amount: Number(e.target.value) || 0 } : x))} /><Button variant="ghost" size="icon-sm" aria-label={`Eliminar ${b.category}`} onClick={() => setDraft(draft.filter(x => x.id !== b.id))}><Trash2 /></Button></div>)}</div><Button variant="outline" onClick={() => setDraft([...draft, { id: uid(), category: "Nueva categoría", amount: 0, color: "#0ea5e9" }])}><Plus /> Añadir categoría</Button><DialogFooter><Button onClick={() => onSave(draft)}>Guardar presupuesto</Button></DialogFooter></DialogContent></Dialog>;
 }
